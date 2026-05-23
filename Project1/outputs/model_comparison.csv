@@ -1,0 +1,6 @@
+model,MAE,RMSE,R2
+Linear Regression,1.94,2.485,0.886
+KNN (k=5),3.632,4.54,0.619
+Decision Tree,2.489,3.244,0.805
+Random Forest,1.615,2.241,0.907
+Random Forest (tuned),1.604,2.228,0.908
