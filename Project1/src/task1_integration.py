@@ -9,68 +9,158 @@
 #   - outcomes (the result of each diet program)
 
 
+# Course: Elementos de Inteligencia Artificial e Ciencia de Dados (EIACD) 2025/26
+
+import logging
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Optional
+
 import pandas as pd
 
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  [%(levelname)s]  %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+log = logging.getLogger(__name__)
 
-# ---- Step 1: read the four CSV files ---------------------------------------
+# Configuration
 
-# Each CSV is loaded into a DataFrame (a table in pandas).
-patients = pd.read_csv("../data/patients.csv")
-diets = pd.read_csv("../data/diets.csv")
-nutritionists = pd.read_csv("../data/nutritionists.csv")
-outcomes = pd.read_csv("../data/outcomes.csv")
+@dataclass
+class IntegrationConfig:
+    data_dir: Path = Path("../data")
+    output_dir: Path = Path("../outputs")
+    output_file: str = "merged_dataset.csv"
 
-# Print the size of each table to make sure the files were read correctly.
-print("Patients table:", patients.shape)
-print("Diets table:", diets.shape)
-print("Nutritionists table:", nutritionists.shape)
-print("Outcomes table:", outcomes.shape)
-print()
+    # Maps each logical table to a filename
+    csv_files: Dict[str, str] = field(default_factory=lambda: {
+        "patients": "patients.csv",
+        "diets": "diets.csv",
+        "nutritionists": "nutritionists.csv",
+        "outcomes": "outcomes.csv",
+    })
 
-
-# ---- Step 2: join the tables -----------------------------------------------
-
-# The "outcomes" table is the central one. Each row is a diet program and
-# it has the IDs that link to the other three tables:
-#   - patient_id        -> patients table
-#   - diet_id           -> diets table
-#   - nutritionist_id   -> nutritionists table
-#
-# So we start from "outcomes" and add the other tables one by one.
-# We use how="left" to keep every row of outcomes even if some ID has no
-# match. This way we can see later if there are missing links.
-
-data = pd.merge(outcomes, patients, on="patient_id", how="left")
-data = pd.merge(data, diets, on="diet_id", how="left")
-data = pd.merge(data, nutritionists, on="nutritionist_id", how="left")
-
-
-# ---- Step 3: check the result ----------------------------------------------
-
-print("Final merged table:", data.shape)
-print("Number of columns:", len(data.columns))
-print()
-print("Column names:")
-for col in data.columns:
-    print(" -", col)
-print()
-
-# Check that no rows were lost during the merge.
-# The number of rows must be the same as the outcomes table.
-if data.shape[0] == outcomes.shape[0]:
-    print("OK - no rows were lost during the merge.")
-else:
-    print("WARNING - some rows were lost!")
-
-# Check how many missing values exist after the merge (just to know).
-missing_total = data.isna().sum().sum()
-print("Total missing values in the merged table:", missing_total)
-print()
+    # Join keys for each table against the central outcomes table
+    join_keys: Dict[str, str] = field(default_factory=lambda: {
+        "patients": "patient_id",
+        "diets": "diet_id",
+        "nutritionists": "nutritionist_id",
+    })
 
 
-# ---- Step 4: save the merged dataset ---------------------------------------
+# DataLoader
+class DataLoader:
+    """Reads all CSV files and stores them as DataFrames."""
 
-# Save the result so that the next tasks can use it without redoing the join.
-output_path = "../outputs/merged_dataset.csv"
-data.to_csv(output_path, index=False)
-print("Merged dataset saved to:", output_path)
+    def __init__(self, config: IntegrationConfig):
+        self.cfg = config
+        self.tables: Dict[str, pd.DataFrame] = {}
+
+    def load_all(self) -> None:
+        for name, filename in self.cfg.csv_files.items():
+            path = self.cfg.data_dir / filename
+            if not path.exists():
+                log.error("File not found: %s", path)
+                sys.exit(1)
+            df = pd.read_csv(path)
+            self.tables[name] = df
+            log.info("Loaded %-15s  shape=%s", name, df.shape)
+
+    def summary(self) -> None:
+        log.info("--- Table summary ---")
+        for name, df in self.tables.items():
+            missing = df.isna().sum().sum()
+            log.info("  %-15s  rows=%-6d  cols=%-3d  missing=%d",
+                     name, len(df), len(df.columns), missing)
+
+
+# DataIntegrator
+class DataIntegrator:
+    """Merges multiple tables into a single flat DataFrame."""
+
+    def __init__(self, loader: DataLoader, config: IntegrationConfig):
+        self.loader = loader
+        self.cfg = config
+        self.merged: Optional[pd.DataFrame] = None
+
+    def merge(self) -> pd.DataFrame:
+        tables = self.loader.tables
+        outcomes = tables["outcomes"]
+        log.info("Starting merge from outcomes table (%d rows)", len(outcomes))
+
+        result = outcomes.copy()
+        for table_name, key in self.cfg.join_keys.items():
+            before = len(result)
+            result = pd.merge(result, tables[table_name], on=key, how="left")
+            after = len(result)
+            if before != after:
+                log.warning(
+                    "Row count changed after merging '%s': %d -> %d",
+                    table_name, before, after,
+                )
+            else:
+                log.info("Merged '%-15s' on '%-20s'  rows still %d", table_name, key, after)
+
+        self._integrity_check(outcomes, result)
+        self.merged = result
+        return result
+
+    def _integrity_check(self, outcomes: pd.DataFrame, merged: pd.DataFrame) -> None:
+        log.info("--- Integrity checks ---")
+        if len(merged) == len(outcomes):
+            log.info("Row count preserved: %d rows (OK)", len(merged))
+        else:
+            log.warning("Row count mismatch! outcomes=%d  merged=%d", len(outcomes), len(merged))
+
+        total_missing = merged.isna().sum().sum()
+        log.info("Total missing values in merged table: %d", total_missing)
+
+        missing_per_col = merged.isna().sum()
+        cols_with_missing = missing_per_col[missing_per_col > 0]
+        if not cols_with_missing.empty:
+            log.info("Columns with missing values:")
+            for col, n in cols_with_missing.items():
+                pct = 100.0 * n / len(merged)
+                log.info("  %-30s  %d  (%.1f%%)", col, n, pct)
+
+    def save(self) -> None:
+        if self.merged is None:
+            raise RuntimeError("Call merge() before save().")
+        os.makedirs(self.cfg.output_dir, exist_ok=True)
+        out = self.cfg.output_dir / self.cfg.output_file
+        self.merged.to_csv(out, index=False)
+        log.info("Merged dataset saved to: %s  shape=%s", out, self.merged.shape)
+
+    def print_columns(self) -> None:
+        if self.merged is None:
+            return
+        log.info("Columns in merged dataset (%d total):", len(self.merged.columns))
+        for c in self.merged.columns:
+            dtype = str(self.merged[c].dtype)
+            log.info("  %-35s  dtype=%s", c, dtype)
+
+
+# Main
+def main() -> None:
+    cfg = IntegrationConfig()
+
+    loader = DataLoader(cfg)
+    loader.load_all()
+    loader.summary()
+
+    integrator = DataIntegrator(loader, cfg)
+    integrator.merge()
+    integrator.print_columns()
+    integrator.save()
+
+    log.info("Task 1 complete.")
+
+
+if __name__ == "__main__":
+    main()
+

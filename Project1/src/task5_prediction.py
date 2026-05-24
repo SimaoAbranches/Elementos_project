@@ -9,191 +9,443 @@
 # also look at which features the best model thinks are important.
 
 
-import pandas as pd
-import numpy as np
+import logging
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import matplotlib.pyplot as plt
-
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.neighbors import KNeighborsRegressor
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
+from sklearn.tree import DecisionTreeRegressor
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
-# ---- Step 1: load the cleaned dataset --------------------------------------
-
-data = pd.read_csv("../outputs/cleaned_dataset.csv")
-print("Dataset shape:", data.shape)
-
-
-# ---- Step 2: choose features and target ------------------------------------
-
-# Target: weight_change_kg_6m (the value we want to predict)
-# Features: everything that describes the patient, the diet and the
-# nutritionist. We drop:
-#   - the IDs (they are just labels, no information for prediction)
-#   - the target itself
-#   - the date column (we are not doing time analysis)
-
-target_col = "weight_change_kg_6m"
-columns_to_drop = [
-    target_col,
-    "program_id",
-    "patient_id",
-    "nutritionist_id",
-    "diet_id",
-    "record_created_at",
-]
-X = data.drop(columns=columns_to_drop)
-y = data[target_col]
-
-print("Number of features (before encoding):", X.shape[1])
-
-
-# ---- Step 3: encode categorical features -----------------------------------
-
-# Models from scikit-learn need numbers, not text. So I convert each
-# categorical column into several 0/1 columns using one-hot encoding.
-# pd.get_dummies does this automatically.
-
-X = pd.get_dummies(X, drop_first=True)
-print("Number of features (after encoding):", X.shape[1])
-
-
-# ---- Step 4: split the data into training and test sets --------------------
-
-# We train the models on the training set and we test them on data
-# they have never seen. random_state=42 makes the split reproducible.
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  [%(levelname)s]  %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
-print("Training rows:", X_train.shape[0])
-print("Test rows:", X_test.shape[0])
+log = logging.getLogger(__name__)
 
 
-# ---- Step 5: scale the features --------------------------------------------
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-# Some models (Linear Regression, KNN) work better when the features
-# are scaled. Tree-based models (Decision Tree, Random Forest) do not
-# need scaling but it does not hurt them.
+@dataclass
+class PredictionConfig:
+    input_path: Path = Path("../outputs/cleaned_dataset.csv")
+    output_dir: Path = Path("../outputs")
+    plot_dir: Path = Path("../outputs/plots")
+    dpi: int = 130
 
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+    target_col: str = "weight_change_kg_6m"
 
+    id_columns: List[str] = field(default_factory=lambda: [
+        "program_id",
+        "patient_id",
+        "nutritionist_id",
+        "diet_id",
+        "record_created_at",
+    ])
 
-# ---- Step 6: train and evaluate several models -----------------------------
+    # Split proportions: 60% train, 20% validation, 20% test
+    test_size: float = 0.20
+    val_fraction_of_remaining: float = 0.25   # 0.25 * 0.80 = 0.20 total
+    random_state: int = 42
 
-# A small helper to print the metrics of a model.
-def evaluate(name, y_true, y_pred):
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    r2 = r2_score(y_true, y_pred)
-    print(f"  {name:25s}  MAE={mae:.3f}  RMSE={rmse:.3f}  R2={r2:.3f}")
-    return {"model": name, "MAE": mae, "RMSE": rmse, "R2": r2}
-
-
-print("\n--- Model comparison ---")
-results = []
-
-# Model 1: Linear Regression - simple baseline
-lr = LinearRegression()
-lr.fit(X_train_scaled, y_train)
-results.append(evaluate("Linear Regression", y_test, lr.predict(X_test_scaled)))
-
-# Model 2: K-Nearest Neighbors (KNN)
-knn = KNeighborsRegressor(n_neighbors=5)
-knn.fit(X_train_scaled, y_train)
-results.append(evaluate("KNN (k=5)", y_test, knn.predict(X_test_scaled)))
-
-# Model 3: Decision Tree
-dt = DecisionTreeRegressor(random_state=42, max_depth=8)
-dt.fit(X_train, y_train)
-results.append(evaluate("Decision Tree", y_test, dt.predict(X_test)))
-
-# Model 4: Random Forest
-rf = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-rf.fit(X_train, y_train)
-results.append(evaluate("Random Forest", y_test, rf.predict(X_test)))
+    cv_folds: int = 5
 
 
-# ---- Step 7: tune the best model with GridSearchCV -------------------------
+# ---------------------------------------------------------------------------
+# DataPreparer
+# ---------------------------------------------------------------------------
 
-# Random Forest is usually the best one. We try a small grid of values
-# for the main hyperparameters and pick the combination that gives the
-# best result on cross-validation.
+class DataPreparer:
+    """
+    Loads the cleaned dataset, drops ID columns, one-hot encodes categoricals,
+    and splits into train / validation / test.
+    """
 
-print("\n--- Tuning Random Forest with GridSearchCV ---")
-param_grid = {
-    "n_estimators": [100, 200, 300],
-    "max_depth": [None, 10, 20],
-    "min_samples_split": [2, 5],
-}
-grid = GridSearchCV(
-    RandomForestRegressor(random_state=42, n_jobs=-1),
-    param_grid,
-    cv=3,
-    scoring="r2",
-    n_jobs=-1,
-)
-grid.fit(X_train, y_train)
-print("Best parameters:", grid.best_params_)
+    def __init__(self, config: PredictionConfig):
+        self.cfg = config
 
-best_rf = grid.best_estimator_
-results.append(evaluate("Random Forest (tuned)", y_test, best_rf.predict(X_test)))
+    def prepare(self) -> Tuple[
+        pd.DataFrame, pd.DataFrame, pd.DataFrame,
+        pd.Series,   pd.Series,   pd.Series,
+    ]:
+        if not self.cfg.input_path.exists():
+            log.error("File not found: %s", self.cfg.input_path)
+            sys.exit(1)
+
+        df = pd.read_csv(self.cfg.input_path)
+        log.info("Loaded dataset  shape=%s", df.shape)
+
+        # Drop IDs and any leftover cluster column
+        drop_cols = [c for c in self.cfg.id_columns + ["cluster"]
+                     if c in df.columns]
+        df = df.drop(columns=drop_cols)
+
+        X = df.drop(columns=[self.cfg.target_col])
+        y = df[self.cfg.target_col]
+
+        # One-hot encode categoricals
+        X = pd.get_dummies(X, drop_first=True)
+        log.info("Features after one-hot encoding: %d", X.shape[1])
+
+        # First split: separate test set
+        X_temp, X_test, y_temp, y_test = train_test_split(
+            X, y,
+            test_size=self.cfg.test_size,
+            random_state=self.cfg.random_state,
+        )
+
+        # Second split: train vs validation from the remaining data
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_temp, y_temp,
+            test_size=self.cfg.val_fraction_of_remaining,
+            random_state=self.cfg.random_state,
+        )
+
+        total = len(X)
+        log.info(
+            "Split -> train=%d (%.0f%%)  val=%d (%.0f%%)  test=%d (%.0f%%)",
+            len(X_train), 100 * len(X_train) / total,
+            len(X_val),   100 * len(X_val)   / total,
+            len(X_test),  100 * len(X_test)  / total,
+        )
+        return X_train, X_val, X_test, y_train, y_val, y_test
 
 
-# ---- Step 8: save the comparison table -------------------------------------
+# ---------------------------------------------------------------------------
+# ModelFactory
+# ---------------------------------------------------------------------------
 
-results_df = pd.DataFrame(results).round(3)
-results_df.to_csv("../outputs/model_comparison.csv", index=False)
-print("\nSaved: ../outputs/model_comparison.csv")
-print(results_df)
+class ModelFactory:
+    """Returns a dictionary of name -> sklearn pipeline for each model."""
+
+    @staticmethod
+    def build() -> Dict[str, Any]:
+        models: Dict[str, Any] = {}
+
+        # Ridge regression (regularised linear model – good baseline)
+        models["Ridge Regression"] = Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", Ridge(alpha=1.0)),
+        ])
+
+        # Support Vector Regression with RBF kernel
+        models["SVR (RBF)"] = Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", SVR(kernel="rbf", C=10, epsilon=0.5, gamma="scale")),
+        ])
+
+        # K-Nearest Neighbours
+        models["KNN (k=7)"] = Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", KNeighborsRegressor(n_neighbors=7, weights="distance")),
+        ])
+
+        # Decision Tree  (moderately constrained to avoid total overfitting)
+        models["Decision Tree"] = Pipeline([
+            ("model", DecisionTreeRegressor(
+                max_depth=6,
+                min_samples_split=10,
+                min_samples_leaf=5,
+                random_state=42,
+            )),
+        ])
+
+        # Random Forest
+        models["Random Forest"] = Pipeline([
+            ("model", RandomForestRegressor(
+                n_estimators=300,
+                max_depth=None,
+                min_samples_split=5,
+                random_state=42,
+                n_jobs=-1,
+            )),
+        ])
+
+        # Gradient Boosting
+        models["Gradient Boosting"] = Pipeline([
+            ("model", GradientBoostingRegressor(
+                n_estimators=300,
+                learning_rate=0.05,
+                max_depth=4,
+                subsample=0.8,
+                random_state=42,
+            )),
+        ])
+
+        return models
 
 
-# ---- Step 9: feature importance of the best model --------------------------
+# ---------------------------------------------------------------------------
+# ModelEvaluator
+# ---------------------------------------------------------------------------
 
-# Random Forest gives a score for each feature: how useful it was for
-# the prediction. We plot the top 15.
+class ModelEvaluator:
+    """Fits each model, evaluates on validation set and records metrics."""
 
-importances = pd.Series(best_rf.feature_importances_, index=X.columns)
-top = importances.sort_values(ascending=False).head(15)
+    def __init__(self, config: PredictionConfig):
+        self.cfg = config
+        self.records: List[dict] = []
+        self.fitted_models: Dict[str, Any] = {}
 
-plt.figure(figsize=(8, 5))
-top[::-1].plot.barh(color="steelblue")
-plt.title("Top 15 most important features (Random Forest)")
-plt.xlabel("Importance")
-plt.tight_layout()
-plt.savefig("../outputs/plots/feature_importance.png", dpi=120)
-plt.close()
-print("\nSaved: feature_importance.png")
-print("\nTop 10 most important features:")
-print(top.head(10).round(4))
+    @staticmethod
+    def _metrics(y_true: pd.Series, y_pred: np.ndarray) -> dict:
+        mae = mean_absolute_error(y_true, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+        r2 = r2_score(y_true, y_pred)
+        return {"MAE": round(mae, 4), "RMSE": round(rmse, 4), "R2": round(r2, 4)}
+
+    def run(
+        self,
+        models: Dict[str, Any],
+        X_train: pd.DataFrame, y_train: pd.Series,
+        X_val: pd.DataFrame, y_val: pd.Series,
+    ) -> pd.DataFrame:
+
+        log.info("=== Training and validation ===")
+        for name, pipeline in models.items():
+            pipeline.fit(X_train, y_train)
+            self.fitted_models[name] = pipeline
+
+            val_pred = pipeline.predict(X_val)
+            m = self._metrics(y_val, val_pred)
+
+            # Cross-validation R² on training data (extra robustness check)
+            cv_r2 = cross_val_score(
+                pipeline, X_train, y_train,
+                cv=self.cfg.cv_folds, scoring="r2", n_jobs=-1,
+            )
+            m["CV_R2_mean"] = round(cv_r2.mean(), 4)
+            m["CV_R2_std"] = round(cv_r2.std(), 4)
+            m["model"] = name
+            self.records.append(m)
+            log.info(
+                "  %-22s  val MAE=%6.3f  RMSE=%6.3f  R2=%+.3f  CV_R2=%+.3f±%.3f",
+                name, m["MAE"], m["RMSE"], m["R2"],
+                m["CV_R2_mean"], m["CV_R2_std"],
+            )
+
+        results = pd.DataFrame(self.records).set_index("model")
+        return results
+
+    def best_model_name(self, results: pd.DataFrame) -> str:
+        # Pick the model with the highest validation R²
+        best = results["R2"].idxmax()
+        log.info("Best model on validation set: '%s'  R2=%.4f", best, results.loc[best, "R2"])
+        return best
 
 
-# ---- Step 10: predicted vs actual plot -------------------------------------
+# ---------------------------------------------------------------------------
+# TestEvaluator
+# ---------------------------------------------------------------------------
 
-# Visualize how good the predictions are by plotting predicted values
-# against the real values. A perfect model would have all the points
-# on the diagonal.
+class TestEvaluator:
+    """Re-evaluates the best model on the held-out test set."""
 
-y_pred = best_rf.predict(X_test)
+    def __init__(self, config: PredictionConfig):
+        self.cfg = config
 
-plt.figure(figsize=(6, 6))
-plt.scatter(y_test, y_pred, alpha=0.4)
-mn = min(y_test.min(), y_pred.min())
-mx = max(y_test.max(), y_pred.max())
-plt.plot([mn, mx], [mn, mx], "r--", label="Perfect prediction")
-plt.xlabel("Actual weight change (kg)")
-plt.ylabel("Predicted weight change (kg)")
-plt.title("Predicted vs actual - Random Forest (tuned)")
-plt.legend()
-plt.tight_layout()
-plt.savefig("../outputs/plots/predicted_vs_actual.png", dpi=120)
-plt.close()
-print("Saved: predicted_vs_actual.png")
+    def run(
+        self,
+        model: Any,
+        model_name: str,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+    ) -> dict:
+        y_pred = model.predict(X_test)
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        r2 = r2_score(y_test, y_pred)
+        log.info(
+            "=== Test set results for '%s' ===\n"
+            "  MAE  = %.4f\n  RMSE = %.4f\n  R2   = %.4f",
+            model_name, mae, rmse, r2,
+        )
+        return {"model": model_name, "MAE": mae, "RMSE": rmse, "R2": r2,
+                "y_pred": y_pred}
 
-print("\nDone.")
+
+# ---------------------------------------------------------------------------
+# FeatureImportanceAnalyser
+# ---------------------------------------------------------------------------
+
+class FeatureImportanceAnalyser:
+    """
+    Extracts feature importances for tree-based models.
+    Falls back to a note if the model type does not expose importances.
+    """
+
+    def __init__(self, config: PredictionConfig):
+        self.cfg = config
+        os.makedirs(config.plot_dir, exist_ok=True)
+
+    def run(self, pipeline: Any, feature_names: List[str]) -> None:
+        # Navigate into the pipeline to find the underlying estimator
+        if hasattr(pipeline, "named_steps"):
+            estimator = pipeline.named_steps.get("model", pipeline)
+        else:
+            estimator = pipeline
+
+        if not hasattr(estimator, "feature_importances_"):
+            log.info("Model does not expose feature_importances_; skipping plot.")
+            return
+
+        importances = pd.Series(estimator.feature_importances_, index=feature_names)
+        top = importances.sort_values(ascending=False).head(20)
+
+        log.info("=== Top 10 most important features ===")
+        for feat, imp in top.head(10).items():
+            bar = "█" * int(imp * 200)
+            log.info("  %-35s  %.4f  %s", feat, imp, bar)
+
+        plt.figure(figsize=(9, 6))
+        top[::-1].plot.barh(color="#3a7ebf", edgecolor="white")
+        plt.title("Top 20 most important features", fontsize=12)
+        plt.xlabel("Importance (mean decrease in impurity)")
+        plt.tight_layout()
+        out = self.cfg.plot_dir / "feature_importance.png"
+        plt.savefig(out, dpi=self.cfg.dpi, bbox_inches="tight")
+        plt.close()
+        log.info("Saved: %s", out)
+
+
+# ---------------------------------------------------------------------------
+# PredictionPlotter
+# ---------------------------------------------------------------------------
+
+class PredictionPlotter:
+    """Predicted vs actual and residuals plots."""
+
+    def __init__(self, config: PredictionConfig):
+        self.cfg = config
+        os.makedirs(config.plot_dir, exist_ok=True)
+
+    def pred_vs_actual(self, y_test: pd.Series, y_pred: np.ndarray, model_name: str) -> None:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+
+        # --- Predicted vs actual ---
+        mn = min(y_test.min(), y_pred.min())
+        mx = max(y_test.max(), y_pred.max())
+        ax1.scatter(y_test, y_pred, alpha=0.35, s=20, color="#3a7ebf")
+        ax1.plot([mn, mx], [mn, mx], "r--", linewidth=1.5, label="Ideal")
+        ax1.set_xlabel("Actual weight change (kg)")
+        ax1.set_ylabel("Predicted weight change (kg)")
+        ax1.set_title(f"Predicted vs actual\n({model_name})")
+        ax1.legend()
+
+        # --- Residuals ---
+        residuals = y_pred - y_test.values
+        ax2.scatter(y_pred, residuals, alpha=0.35, s=20, color="#e06c20")
+        ax2.axhline(0, color="red", linestyle="--", linewidth=1.5)
+        ax2.set_xlabel("Predicted value")
+        ax2.set_ylabel("Residual  (predicted − actual)")
+        ax2.set_title("Residual plot")
+
+        plt.suptitle(model_name, fontsize=12, y=1.01)
+        plt.tight_layout()
+        out = self.cfg.plot_dir / "predicted_vs_actual.png"
+        plt.savefig(out, dpi=self.cfg.dpi, bbox_inches="tight")
+        plt.close()
+        log.info("Saved: %s", out)
+
+    def model_comparison_bar(self, results: pd.DataFrame) -> None:
+        metrics = ["MAE", "RMSE", "R2"]
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        colors = plt.cm.Set2.colors
+        for ax, metric in zip(axes, metrics):
+            vals = results[metric].sort_values(ascending=(metric != "R2"))
+            bars = ax.barh(vals.index, vals.values,
+                           color=colors[:len(vals)], edgecolor="white")
+            ax.set_title(metric)
+            ax.set_xlabel(metric)
+            for bar, val in zip(bars, vals.values):
+                ax.text(bar.get_width() + 0.001 * abs(vals.values).max(),
+                        bar.get_y() + bar.get_height() / 2,
+                        f"{val:.3f}", va="center", fontsize=8)
+        plt.suptitle("Model comparison on validation set", fontsize=12)
+        plt.tight_layout()
+        out = self.cfg.plot_dir / "model_comparison.png"
+        plt.savefig(out, dpi=self.cfg.dpi, bbox_inches="tight")
+        plt.close()
+        log.info("Saved: %s", out)
+
+
+# ---------------------------------------------------------------------------
+# Prediction orchestrator
+# ---------------------------------------------------------------------------
+
+class PredictionRunner:
+    def __init__(self, config: PredictionConfig):
+        self.cfg = config
+
+    def run(self) -> None:
+        os.makedirs(self.cfg.output_dir, exist_ok=True)
+        os.makedirs(self.cfg.plot_dir, exist_ok=True)
+
+        # Data
+        preparer = DataPreparer(self.cfg)
+        X_train, X_val, X_test, y_train, y_val, y_test = preparer.prepare()
+
+        feature_names: List[str] = list(X_train.columns)
+
+        # Models
+        models = ModelFactory.build()
+
+        # Train + validate
+        evaluator = ModelEvaluator(self.cfg)
+        val_results = evaluator.run(models, X_train, y_train, X_val, y_val)
+
+        # Save validation comparison
+        out_csv = self.cfg.output_dir / "model_comparison.csv"
+        val_results.to_csv(out_csv)
+        log.info("Validation comparison saved to: %s", out_csv)
+
+        # Pick best model
+        best_name = evaluator.best_model_name(val_results)
+        best_pipeline = evaluator.fitted_models[best_name]
+
+        # Test evaluation
+        tester = TestEvaluator(self.cfg)
+        test_result = tester.run(best_pipeline, best_name, X_test, y_test)
+
+        # Plots
+        plotter = PredictionPlotter(self.cfg)
+        plotter.model_comparison_bar(val_results)
+        plotter.pred_vs_actual(y_test, test_result["y_pred"], best_name)
+
+        # Feature importance
+        FeatureImportanceAnalyser(self.cfg).run(best_pipeline, feature_names)
+
+        log.info("Task 5 complete.")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    cfg = PredictionConfig()
+    PredictionRunner(cfg).run()
+
+
+if __name__ == "__main__":
+    main()
