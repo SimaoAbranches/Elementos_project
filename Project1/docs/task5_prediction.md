@@ -41,13 +41,13 @@ seen.
 
 ### 4. Scaling
 
-I scaled the features with `StandardScaler` because models like Linear
+We scaled the features with `StandardScaler` because models like Linear
 Regression and KNN are sensitive to the scale. Tree-based models
 (Decision Tree, Random Forest) do not need it but are not hurt by it.
 
 ### 5. Models tried
 
-I tried four different models, going from simple to more complex:
+We tried four different models, going from simple to more complex:
 
 | # | Model | Idea |
 |---|---|---|
@@ -58,7 +58,7 @@ I tried four different models, going from simple to more complex:
 
 ### 6. Evaluation metrics
 
-For regression I used three metrics:
+For regression we used three metrics:
 
 - **MAE** (Mean Absolute Error): the average error in kg. Lower is better.
 - **RMSE** (Root Mean Squared Error): like MAE but punishes big errors more.
