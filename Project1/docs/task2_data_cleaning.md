@@ -39,7 +39,7 @@ For example, the `sex` column had values like "F", " F" (with a space),
 "f", "female" and "M", "m", "male". Without fixing this, pandas treats
 "F" and " F" as different categories, which is wrong.
 
-What I did:
+What we did:
 
 - `sex`: lowercase, strip spaces, replace "female"->"f" and "male"->"m".
   Final values: only `f` and `m`.
@@ -57,7 +57,7 @@ for each numeric column and replaced the values outside the range
 with `NaN`. After that they are treated as missing values and filled
 in step 4.
 
-The ranges I used:
+The ranges we used:
 
 | Column | Allowed range | Reason |
 |---|---|---|
