@@ -90,9 +90,9 @@ reasons:
 5. **The target was clipped to ±50 kg** during cleaning. This avoided
    wild outliers but it may have removed some real extreme cases.
 
-## 6. What I would do differently
+## 6. What we would do differently
 
-If I had more time I would try:
+If we had more time we would try:
 
 - **More feature engineering**: for example, compute the BMI category
   (under, normal, over, obese) instead of using the raw BMI, or
@@ -106,7 +106,7 @@ If I had more time I would try:
 - **Cross-validate the final model** with several different splits to
   make sure the result is stable.
 
-## 7. What I learned
+## 7. What we learned
 
 - Cleaning the data is the longest and probably most important step.
   I spent a lot of time finding duplicated columns, fixing impossible
