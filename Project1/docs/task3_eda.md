@@ -12,7 +12,7 @@ target `weight_change_kg_6m` (the kilos a patient lost or gained after
 `outputs/cleaned_dataset.csv` (the result of Task 2) - 2370 rows,
 27 columns, no missing values.
 
-## What I did
+## What we did
 
 ### 1. Descriptive statistics
 
@@ -28,7 +28,7 @@ balanced, skewed, or concentrated in a small range.
 
 ### 3. Correlation between numeric variables
 
-I computed the correlation matrix and made a heatmap
+We computed the correlation matrix and made a heatmap
 (`outputs/plots/correlation_heatmap.png`). The correlation is a number
 between -1 and 1:
 
@@ -38,7 +38,7 @@ between -1 and 1:
 
 ### 4. Effect of each categorical variable on the target
 
-For each categorical variable I made a boxplot of the target grouped
+For each categorical variable we made a boxplot of the target grouped
 by the category, and I also computed the mean weight change per group.
 
 ## Main findings
