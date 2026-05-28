@@ -102,7 +102,7 @@ The cleaned dataset has:
 The cleaned file is saved at `outputs/cleaned_dataset.csv` and it is
 the input for Task 3.
 
-## Things I noticed
+## Things we noticed
 
 - The `years_experience` column had a lot of values equal to 99, which
   was the main outlier source (120 rows). It looks like 99 was used as
