@@ -23,14 +23,14 @@ similar to each other than to patients in other groups.
 
 ### Features used
 
-I used 8 numeric features that describe the patient and the program:
+We used 8 numeric features that describe the patient and the program:
 
 ```
 age, height_cm, baseline_weight_kg, baseline_bmi, sleep_hours,
 motivation_score, mean_adherence_pct, years_experience
 ```
 
-I did **not** use the target `weight_change_kg_6m` because clustering
+We did **not** use the target `weight_change_kg_6m` because clustering
 should not look at the answer; the goal is to find groups based on
 the inputs only.
 
@@ -44,14 +44,14 @@ standard deviation 1).
 
 ### Choosing `k` (elbow method)
 
-I tried `k = 2, 3, ..., 10` and recorded the *inertia* (sum of squared
+We tried `k = 2, 3, ..., 10` and recorded the *inertia* (sum of squared
 distances of points to their cluster center). The plot
 `outputs/plots/clustering_elbow.png` shows the inertia going down as
 `k` grows. The "elbow" is the point where the curve starts to flatten,
 because adding more clusters does not improve the result much.
 
 Looking at my elbow plot, the curve starts to flatten around **k = 4**,
-so I chose 4 clusters.
+so we chose 4 clusters.
 
 ## Results - the four clusters
 
@@ -96,7 +96,7 @@ lowest BMI (23.6 - normal weight). They have the highest adherence
 
 ## Mean weight change per cluster
 
-After the clustering I checked the average of the target per cluster
+After the clustering we checked the average of the target per cluster
 (this was just for interpretation, the target was not used in the
 clustering itself):
 
