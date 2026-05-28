@@ -57,9 +57,9 @@ outcomes table found a matching patient, diet and nutritionist.
 The merged file is saved at `outputs/merged_dataset.csv` and it is the
 input for Task 2.
 
-## Things I noticed
+## Things we noticed
 
-While checking the columns I already noticed some things that will be
+While checking the columns we already noticed some things that will be
 useful for Task 2:
 
 - There seem to be some columns that look duplicated:
